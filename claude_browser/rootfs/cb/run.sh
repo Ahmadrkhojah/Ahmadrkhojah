@@ -22,6 +22,10 @@ HOME_NAMES=$(node -e '
   let o={}; try{o=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))}catch{}
   const v=String(o.home_public_names??""); process.stdout.write(/^[A-Za-z0-9.,-]*$/.test(v)?v:"");' "$OPT")
 
+if [ -z "$HOME_NAMES" ]; then
+  log "WARN: home_public_names is empty: the proxy does NOT refuse this home's own public address. Set it in the app's options."
+fi
+
 # ---- token: 256 random bits, readable only by root here and by cbgw in /run/cb.
 umask 077
 if [ ! -s /data/token ]; then
@@ -53,19 +57,41 @@ unset SUPERVISOR_TOKEN HASSIO_TOKEN || true
 as() { local u=$1; shift; setpriv --reuid="$u" --regid="$u" --init-groups --no-new-privs "$@"; }
 BASE_ENV=(env -i PATH=/usr/local/bin:/usr/bin:/bin NODE_ENV=production LANG=C.UTF-8)
 
-# ---- Chromium sandbox: on if this container allows it.
+NODE_UID=$(id -u node)
+kill_uid() {  # no procps in this image: walk /proc
+  local sig=$1 f pid
+  for f in /proc/[0-9]*/status; do
+    pid=${f#/proc/}; pid=${pid%/status}
+    awk -v u="$2" '$1=="Uid:"{f=($2==u)} END{exit !f}' "$f" 2>/dev/null && kill "-$sig" "$pid" 2>/dev/null || true
+  done
+}
+
+# ---- Chromium sandbox: on unless the probe proves this container refuses it (fail closed).
+# The probe launches the SAME browser (channel, headless, args) as Playwright MCP, as the same
+# user, from the generated config, so the answer holds for the browser that really runs.
 PW_CORE=$(node -e 'process.stdout.write(require.resolve("playwright-core",{paths:["/app"]}))')
-SANDBOX=false
-if timeout 60 setpriv --reuid=node --regid=node --init-groups --no-new-privs "${BASE_ENV[@]}" HOME=/home/node PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
-     node -e 'require(process.argv[1]).chromium.launch({chromiumSandbox:true,headless:true,args:["--disable-dev-shm-usage"]}).then(b=>b.close()).then(()=>process.exit(0),e=>{console.error(String(e.message).split("\n")[0]);process.exit(1)})' "$PW_CORE"; then
-  SANDBOX=true
-fi
-log "chromium sandbox: $SANDBOX"
-node -e '
-  const fs=require("fs"); const c=JSON.parse(fs.readFileSync("/cb/pw-config.base.json","utf8"));
-  c.browser.launchOptions.chromiumSandbox = process.argv[1]==="true";
-  fs.writeFileSync("/run/cb/pw-config.json", JSON.stringify(c,null,1), {mode:0o644});' "$SANDBOX"
-chmod 0644 /run/cb/pw-config.json
+write_pw_config() {
+  node -e '
+    const fs=require("fs"); const c=JSON.parse(fs.readFileSync("/cb/pw-config.base.json","utf8"));
+    c.browser.launchOptions.chromiumSandbox = process.argv[1]==="true";
+    fs.writeFileSync("/run/cb/pw-config.json", JSON.stringify(c,null,1), {mode:0o644});' "$1"
+  chmod 0644 /run/cb/pw-config.json
+}
+write_pw_config true
+SANDBOX=true
+set +e
+PROBE=$(timeout -k 10 200 setpriv --reuid=node --regid=node --init-groups --no-new-privs "${BASE_ENV[@]}" HOME=/home/node \
+  PLAYWRIGHT_BROWSERS_PATH=/ms-playwright node /cb/sandbox-probe.mjs /run/cb/pw-config.json "$PW_CORE" 2>&1 | tail -n 1)
+PROBE_RC=$?   # pipefail is on: the probe's own exit code (124 = timeout)
+set -e
+kill_uid KILL "$NODE_UID"   # nothing from the probe may outlive it
+PROBE_REASON=$(printf '%s' "$PROBE" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let r="no answer from probe";try{r=JSON.parse(s).reason||r}catch{if(s)r=s}process.stdout.write(String(r).replace(/[^ -~]/g,"?").slice(0,300))})')
+case "$PROBE_RC" in
+  0) log "chromium sandbox: true" ;;
+  2) SANDBOX=false; log "WARN: chromium sandbox: false (this container refuses it: $PROBE_REASON)" ;;
+  *) log "ERROR: chromium did not start in the probe (exit $PROBE_RC): $PROBE_REASON; sandbox stays on" ;;
+esac
+write_pw_config "$SANDBOX"
 mkdir -p /tmp/cb-out && chown node:node /tmp/cb-out && chmod 0700 /tmp/cb-out
 
 start_proxy() { as cbproxy "${BASE_ENV[@]}" HOME=/nonexistent CB_HOME_NAMES="$HOME_NAMES" node /cb/proxy.mjs & PROXY_PID=$!; }
@@ -80,14 +106,6 @@ start_browser() {
 start_gateway() {
   as cbgw "${BASE_ENV[@]}" HOME=/nonexistent CB_TOKEN_FILE=/run/cb/token CB_IDLE_MINUTES="$IDLE_MIN" \
     CB_MAX_RESULT_CHARS="$MAX_CHARS" node /cb/gateway.mjs & GATEWAY_PID=$!
-}
-NODE_UID=$(id -u node)
-kill_uid() {  # no procps in this image: walk /proc
-  local sig=$1 f pid
-  for f in /proc/[0-9]*/status; do
-    pid=${f#/proc/}; pid=${pid%/status}
-    awk -v u="$2" '$1=="Uid:"{f=($2==u)} END{exit !f}' "$f" 2>/dev/null && kill "-$sig" "$pid" 2>/dev/null || true
-  done
 }
 stop_browser() {
   kill -TERM -- "-$BROWSER_PID" 2>/dev/null || true

@@ -2,7 +2,7 @@
 # Published copy. Set the option home_public_names to your own public host name(s) before the first start.
 # Reached ONLY through Home Assistant's MCP server (/api/mcp, HA login): no host port, no host network.
 name: Claude Browser
-version: "0.1.0"
+version: "0.1.1"
 slug: claude_browser
 description: Headless Chromium for Claude (Playwright MCP 0.0.85) behind a proxy that refuses home addresses
 url: https://github.com/microsoft/playwright-mcp

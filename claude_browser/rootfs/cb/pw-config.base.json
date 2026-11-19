@@ -4,6 +4,7 @@
     "isolated": true,
     "launchOptions": {
       "headless": true,
+      "channel": "chromium",
       "chromiumSandbox": true,
       "proxy": { "server": "http://127.0.0.1:3128", "bypass": "<-loopback>" },
       "args": [
@@ -25,7 +26,7 @@
       "serviceWorkers": "block",
       "viewport": { "width": 1280, "height": 900 },
       "locale": "en-US",
-      "timezoneId": "Asia/Riyadh"
+      "timezoneId": "UTC"
     },
     "initScript": ["/cb/popups.js"]
   },

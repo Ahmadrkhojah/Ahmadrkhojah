@@ -18,7 +18,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { hostnameProblem } from './policy.mjs';
 
-const VERSION = '0.1.3';
+const VERSION = '0.1.4';
 const LISTEN_PORT = Number(process.env.CB_GATEWAY_PORT || 8931);
 const UPSTREAM = process.env.CB_UPSTREAM || 'http://127.0.0.1:8930/mcp';
 const IDLE_MS = Number(process.env.CB_IDLE_MINUTES || 5) * 60_000;
@@ -229,6 +229,52 @@ export function shapeResult(result, maxChars = MAX_RESULT_CHARS) {
   };
 }
 
+// browser_navigate waits for DOMContentLoaded up to the navigation limit in pw-config
+// (timeouts.navigation). When a page is slower, Playwright MCP returns an error although the page
+// is open and partly drawn. navTimedOut() spots that error and returns the limit in ms (0 if not).
+export function navTimedOut(result) {
+  if (!result?.isError) return 0;
+  // Only the error line Playwright MCP writes first ("### Error\n<message>"); a page title further down can't fake it.
+  const first = String(result.content?.[0]?.text || '');
+  const m = /^### Error\n(?:TimeoutError: )?page\.goto: Timeout (\d{1,6})ms exceeded/.exec(first);
+  return m ? Number(m[1]) : 0;
+}
+
+// Full URL a result shows ("- Page URL: …"), '' if none.
+export function pageUrl(result) {
+  const text = (result?.content || []).map((c) => String(c?.text || '')).join('\n');
+  const m = /^- Page URL: (\S+)/m.exec(text);
+  return m ? m[1] : '';
+}
+let lastPageUrl = '';
+
+// Host of the page a snapshot shows ("- Page URL: …"), www. stripped; '' if none.
+export function snapshotHost(result) {
+  const text = (result?.content || []).map((c) => String(c?.text || '')).join('\n');
+  const m = /^- Page URL: (\S+)/m.exec(text);
+  if (!m) return '';
+  try { return new URL(m[1]).hostname.toLowerCase().replace(/^www\./, ''); } catch { return ''; }
+}
+
+// True when the snapshot shows the site that was asked for (same host, www. ignored, or a subdomain of it),
+// so a site that never answered can't make the previous page look like the new one.
+export function sameSite(snapshotResult, requestedUrl) {
+  let want;
+  try { want = new URL(requestedUrl).hostname.toLowerCase().replace(/^www\./, ''); } catch { return false; }
+  const got = snapshotHost(snapshotResult);
+  return !!got && (got === want || got.endsWith(`.${want}`));
+}
+
+// The reply for a slow page: not an error. The gateway's own note sits outside the untrusted block.
+export function slowNavigationResult(snapshotResult, limitMs, maxChars = MAX_RESULT_CHARS) {
+  const secs = Math.round(limitMs / 1000);
+  const note = snapshotResult
+    ? `The page opened but was still loading after ${secs} s. Below is what had loaded so far; call browser_snapshot or browser_find again in a few seconds for the rest.`
+    : `The page opened but was still loading after ${secs} s. It stays open: call browser_snapshot or browser_find in a few seconds to read it.`;
+  const shaped = shapeResult(snapshotResult || { content: [] }, maxChars);
+  return { content: [{ type: 'text', text: note }, ...shaped.content], isError: false };
+}
+
 let chain = Promise.resolve();
 let queued = 0;
 let busy = false;
@@ -257,8 +303,43 @@ async function callTool(name, args, deadline = Date.now() + DEADLINE_MS) {
         try {
           await ensureUpstream(Math.min(15_000, left() - 2000));
           const r = await upstreamPost('tools/call', { name, arguments: args || {} }, { timeoutMs: Math.min(CALL_TIMEOUT_MS, left() - 1000) });
-          const shaped = shapeResult(r.result);
-          const tabs = countTabs((r.result?.content || []).map((c) => c.text || '').join('\n'));
+          let shaped;
+          let tabsFrom = r.result;
+          const slowMs = name === 'browser_navigate' ? navTimedOut(r.result) : 0;
+          if (slowMs) {
+            // A slow page (Amazon) hit Playwright's navigation limit before DOMContentLoaded, but it may be
+            // open and partly loaded. Read what is there instead of reporting an error (0.1.4).
+            let snap = null;
+            if (left() > 4000) {
+              try {
+                const s = await upstreamPost('tools/call', { name: 'browser_snapshot', arguments: {} }, { timeoutMs: Math.min(8000, left() - 1500) });
+                if (!s.result?.isError) snap = s.result;
+              } catch (e2) {
+                log(`navigate: snapshot after slow load failed: ${String(e2.message).slice(0, 120)}`);
+                if (e2.name === 'TimeoutError' || e2.name === 'AbortError') closeUpstream('snapshot timed out').catch(() => {});
+              }
+            }
+            let want = '';
+            try { want = new URL(args.url).href; } catch { /* checked before */ }
+            const got = pageUrl(snap);
+            // Accept only the new site AND a page that moved (or is exactly the one asked for): a site that
+            // never answered leaves the previous page in the tab, same host included.
+            if (snap && sameSite(snap, args.url) && (got !== lastPageUrl || got === want)) {
+              log(`navigate: page still loading after ${Math.round(slowMs / 1000)} s; returning what loaded`);
+              shaped = slowNavigationResult(snap, slowMs);
+              tabsFrom = snap;
+            } else {
+              // Nothing proves the site answered (no snapshot, or the tab still shows the old page): an error.
+              log('navigate: site did not answer in time');
+              shaped = { content: [{ type: 'text', text: `The site did not answer within ${Math.round(slowMs / 1000)} s. Try again or try another site.` }], isError: true };
+              if (snap) tabsFrom = snap;
+            }
+          } else {
+            shaped = shapeResult(r.result);
+          }
+          const seen = pageUrl(tabsFrom);
+          if (seen) lastPageUrl = seen;
+          const tabs = countTabs((tabsFrom?.content || []).map((c) => c.text || '').join('\n'));
           for (let i = tabs - 1; i >= MAX_TABS; i--) {
             await upstreamPost('tools/call', { name: 'browser_tabs', arguments: { action: 'close', index: i } }, { timeoutMs: Math.min(5000, left()) }).catch(() => {});
           }

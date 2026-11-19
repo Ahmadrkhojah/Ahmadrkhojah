@@ -43,5 +43,5 @@
   "ignoreRoots": true,
   "codegen": "none",
   "console": { "level": "error" },
-  "timeouts": { "action": 5000, "navigation": 20000, "idle": 0 }
+  "timeouts": { "action": 5000, "navigation": 12000, "idle": 0 }
 }

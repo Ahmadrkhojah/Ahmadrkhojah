@@ -44,7 +44,8 @@ if [ -n "${SUPERVISOR_TOKEN:-}" ]; then
     (async()=>{
       let host=require("os").hostname();
       try{const r=await fetch("http://supervisor/addons/self/info",{headers:H,signal:AbortSignal.timeout(5000)});const j=await r.json();if(j?.data?.hostname)host=j.data.hostname;}catch{}
-      const body={service:"mcp",config:{url:`http://${host}:8931/mcp`,token:tok}};
+      // The token rides in the URL path: Home Assistant stores only `url` from discovery.
+      const body={service:"mcp",config:{url:`http://${host}:8931/mcp/${tok}`}};
       const r=await fetch("http://supervisor/discovery",{method:"POST",headers:H,body:JSON.stringify(body),signal:AbortSignal.timeout(10000)});
       console.log(`[run] discovery sent for http://${host}:8931/mcp -> HTTP ${r.status}`);
     })().catch(e=>{console.log("[run] discovery failed: "+e.message);});'

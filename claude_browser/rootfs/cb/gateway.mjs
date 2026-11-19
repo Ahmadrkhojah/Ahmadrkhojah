@@ -18,7 +18,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { hostnameProblem } from './policy.mjs';
 
-const VERSION = '0.1.1';
+const VERSION = '0.1.2';
 const LISTEN_PORT = Number(process.env.CB_GATEWAY_PORT || 8931);
 const UPSTREAM = process.env.CB_UPSTREAM || 'http://127.0.0.1:8930/mcp';
 const IDLE_MS = Number(process.env.CB_IDLE_MINUTES || 5) * 60_000;
@@ -283,11 +283,16 @@ async function callTool(name, args, deadline = Date.now() + DEADLINE_MS) {
 // ---------------------------------------------------------------- client side (Home Assistant)
 const sessions = new Map(); // id -> last used ms
 
-function authOk(req) {
-  const h = req.headers.authorization || '';
-  const m = /^Bearer\s+(\S+)$/i.exec(h);
-  if (!m) return false;
-  const got = crypto.createHash('sha256').update(m[1]).digest();
+// Home Assistant's `mcp` integration keeps ONLY the URL from Supervisor discovery (checked in
+// Core's config_flow, 19 Nov 2026: a `token` key is ignored), so the token also works as the
+// last path segment: /mcp/<token>. A Bearer header is still accepted. Never log req.url.
+function authOk(req, path) {
+  let tok = null;
+  const m = /^Bearer\s+(\S+)$/i.exec(req.headers.authorization || '');
+  if (m) tok = m[1];
+  else if (path.startsWith('/mcp/')) tok = path.slice(5);
+  if (!tok || tok.length > 200) return false;
+  const got = crypto.createHash('sha256').update(tok).digest();
   return crypto.timingSafeEqual(got, TOKEN_HASH);
 }
 
@@ -339,7 +344,7 @@ async function handleRpc(msg, deadline = Date.now() + DEADLINE_MS) {
 const server = http.createServer(async (req, res) => {
   try {
     const path = (req.url || '').split('?')[0];
-    if (path !== '/mcp' || !authOk(req)) return notFound(res);
+    if ((path !== '/mcp' && !path.startsWith('/mcp/')) || !authOk(req, path)) return notFound(res);
     if (req.method === 'DELETE') { sessions.delete(req.headers['mcp-session-id']); res.writeHead(200); return res.end(); }
     if (req.method !== 'POST') { res.writeHead(405, { allow: 'POST, DELETE' }); return res.end(); }
     const deadline = Date.now() + DEADLINE_MS;

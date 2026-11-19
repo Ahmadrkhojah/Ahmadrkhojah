@@ -1,0 +1,46 @@
+{
+  "browser": {
+    "browserName": "chromium",
+    "isolated": true,
+    "launchOptions": {
+      "headless": true,
+      "chromiumSandbox": true,
+      "proxy": { "server": "http://127.0.0.1:3128", "bypass": "<-loopback>" },
+      "args": [
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--renderer-process-limit=2",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        "--webrtc-ip-handling-policy=disable_non_proxied_udp",
+        "--disable-background-networking",
+        "--dns-prefetch-disable",
+        "--no-pings",
+        "--disable-quic",
+        "--disable-extensions",
+        "--js-flags=--max-old-space-size=512"
+      ]
+    },
+    "contextOptions": {
+      "acceptDownloads": false,
+      "serviceWorkers": "block",
+      "viewport": { "width": 1280, "height": 900 },
+      "locale": "en-US",
+      "timezoneId": "Asia/Riyadh"
+    },
+    "initScript": ["/cb/popups.js"]
+  },
+  "server": { "port": 8930, "host": "127.0.0.1" },
+  "capabilities": [],
+  "saveSession": false,
+  "webmcp": false,
+  "sharedBrowserContext": false,
+  "outputDir": "/tmp/cb-out",
+  "outputMaxSize": 20000000,
+  "filePaths": "absolute",
+  "imageResponses": "omit",
+  "allowUnrestrictedFileAccess": false,
+  "ignoreRoots": true,
+  "codegen": "none",
+  "console": { "level": "error" },
+  "timeouts": { "action": 5000, "navigation": 20000, "idle": 0 }
+}

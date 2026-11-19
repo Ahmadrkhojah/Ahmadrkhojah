@@ -1,0 +1,4 @@
+# Official Microsoft Playwright MCP image, pinned. Update: see vault sops/claude-browser.md.
+build_from:
+  aarch64: mcr.microsoft.com/playwright/mcp:v0.0.85
+  amd64: mcr.microsoft.com/playwright/mcp:v0.0.85

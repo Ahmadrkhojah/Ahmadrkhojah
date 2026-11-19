@@ -1,0 +1,37 @@
+# Claude Browser: a headless Chromium for Claude, as a Home Assistant app.
+# Published copy. Set the option home_public_names to your own public host name(s) before the first start.
+# Reached ONLY through Home Assistant's MCP server (/api/mcp, HA login): no host port, no host network.
+name: Claude Browser
+version: "0.1.0"
+slug: claude_browser
+description: Headless Chromium for Claude (Playwright MCP 0.0.85) behind a proxy that refuses home addresses
+url: https://github.com/microsoft/playwright-mcp
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: application
+boot: auto
+# Supervisor API only to announce the MCP server to Home Assistant (discovery). Lowest role.
+hassio_api: true
+hassio_role: default
+discovery:
+  - mcp
+homeassistant_api: false
+host_network: false
+# No `map:` (no /config, /share, /ssl, /media), no `ports:`, no privileges, no devices.
+# Supervisor restarts the app when the gateway port stops answering.
+watchdog: tcp://[HOST]:[PORT:8931]
+# The access token is not backed up; a restored app makes a new one and re-announces it.
+backup_exclude:
+  - token
+options:
+  home_public_names: ""
+  idle_minutes: 5
+  memory_cap_mb: 1200
+  max_result_chars: 40000
+schema:
+  home_public_names: "match(^[A-Za-z0-9.,-]*$)?"
+  idle_minutes: int(1,60)
+  memory_cap_mb: int(400,3000)
+  max_result_chars: int(5000,200000)

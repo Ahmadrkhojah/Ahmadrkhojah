@@ -93,6 +93,17 @@ test('subdomain of the current page that hangs: error', async () => {
   assert.equal(r.isError, true);
 });
 
+test('tool calls stream keep-alives then one message event (HA httpx 5 s read timeout)', async () => {
+  const r = await fetch(`${base}/mcp`, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: `Bearer ${tok}`, 'mcp-session-id': sid },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'browser_navigate', arguments: { url: 'https://example.net/' } } }) });
+  assert.match(r.headers.get('content-type'), /text\/event-stream/);
+  const body = await r.text();
+  assert.match(body, /^: working\n\n/);
+  const m = /event: message\ndata: (.*)\n\n$/.exec(body);
+  assert.ok(m);
+  assert.equal(JSON.parse(m[1]).id, 9);
+});
+
 test('real errors stay errors', async () => {
   assert.equal((await nav('https://dns.invalid.example/')).isError, true);
   const r = await nav('https://fakeTitle.example/');

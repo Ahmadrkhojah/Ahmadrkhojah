@@ -18,7 +18,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { hostnameProblem } from './policy.mjs';
 
-const VERSION = '0.1.4';
+const VERSION = '0.1.5';
 const LISTEN_PORT = Number(process.env.CB_GATEWAY_PORT || 8931);
 const UPSTREAM = process.env.CB_UPSTREAM || 'http://127.0.0.1:8930/mcp';
 const IDLE_MS = Number(process.env.CB_IDLE_MINUTES || 5) * 60_000;
@@ -26,6 +26,7 @@ const MAX_RESULT_CHARS = Number(process.env.CB_MAX_RESULT_CHARS || 40000);
 const CALL_TIMEOUT_MS = Number(process.env.CB_CALL_TIMEOUT_MS || 25_000);
 // Home Assistant's MCP client gives up after 30 s per call (session setup included).
 const DEADLINE_MS = 27_000;
+const KEEPALIVE_MS = 2_000;
 const MAX_BODY = 256 * 1024;
 const MAX_TABS = 2;
 const MAX_QUEUE = 2;
@@ -451,6 +452,21 @@ const server = http.createServer(async (req, res) => {
     if (!sessions.has(sid)) return notFound(res);
     sessions.set(sid, Date.now());
     if (msg.id === undefined || msg.id === null || msg.method === undefined) { res.writeHead(202); return res.end(); } // notification or client response
+    // Home Assistant's MCP client (httpx) gives up after 5 s without a byte (its default read timeout),
+    // although the call itself may take 30 s. So a tool call is answered as an event stream: a keep-alive
+    // comment every 2 s, then the result as one "message" event (MCP streamable HTTP allows either form).
+    if (msg.method === 'tools/call' && /text\/event-stream/.test(String(req.headers.accept || ''))) {
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'x-accel-buffering': 'no' });
+      res.write(': working\n\n');
+      const ka = setInterval(() => { if (!res.writableEnded && !res.destroyed) res.write(': working\n\n'); }, KEEPALIVE_MS);
+      res.on('close', () => clearInterval(ka));
+      let out;
+      try { out = await handleRpc(msg, deadline); }
+      catch (e) { log(`request failed: ${String(e.message).slice(0, 200)}`); out = rpcError(msg.id, -32603, 'internal error'); }
+      finally { clearInterval(ka); }
+      res.end(`event: message\ndata: ${JSON.stringify(out)}\n\n`);
+      return;
+    }
     return json(res, 200, await handleRpc(msg, deadline));
   } catch (e) {
     log(`request failed: ${e.message}`);

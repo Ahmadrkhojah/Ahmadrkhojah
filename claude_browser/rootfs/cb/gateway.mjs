@@ -18,7 +18,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { hostnameProblem } from './policy.mjs';
 
-const VERSION = '0.1.2';
+const VERSION = '0.1.3';
 const LISTEN_PORT = Number(process.env.CB_GATEWAY_PORT || 8931);
 const UPSTREAM = process.env.CB_UPSTREAM || 'http://127.0.0.1:8930/mcp';
 const IDLE_MS = Number(process.env.CB_IDLE_MINUTES || 5) * 60_000;
@@ -341,10 +341,17 @@ async function handleRpc(msg, deadline = Date.now() + DEADLINE_MS) {
   }
 }
 
+let refusedLogged = 0;
+setInterval(() => { refusedLogged = 0; }, 3_600_000).unref();
 const server = http.createServer(async (req, res) => {
   try {
     const path = (req.url || '').split('?')[0];
-    if ((path !== '/mcp' && !path.startsWith('/mcp/')) || !authOk(req, path)) return notFound(res);
+    if ((path !== '/mcp' && !path.startsWith('/mcp/')) || !authOk(req, path)) {
+      // One line per refused request (at most 20 an hour), so a failed link can be diagnosed.
+      // Only the shape of the path is logged, never the path itself (it may carry a token).
+      if (refusedLogged < 20) { refusedLogged++; log(`refused ${req.method} ${path === '/mcp' ? '/mcp (no token)' : path.startsWith('/mcp/') ? '/mcp/<wrong token>' : 'other path'}`); }
+      return notFound(res);
+    }
     if (req.method === 'DELETE') { sessions.delete(req.headers['mcp-session-id']); res.writeHead(200); return res.end(); }
     if (req.method !== 'POST') { res.writeHead(405, { allow: 'POST, DELETE' }); return res.end(); }
     const deadline = Date.now() + DEADLINE_MS;
@@ -352,6 +359,7 @@ const server = http.createServer(async (req, res) => {
     try { msg = JSON.parse(await readBody(req)); } catch { return json(res, 400, rpcError(null, -32700, 'parse error')); }
     if (!msg || typeof msg !== 'object' || Array.isArray(msg) || msg.jsonrpc !== '2.0') return json(res, 400, rpcError(null, -32600, 'invalid request'));
     if (msg.method === 'initialize') {
+      log(`client connected (initialize, protocol ${String(msg.params?.protocolVersion).slice(0, 12)})`);
       const sid = crypto.randomUUID();
       if (sessions.size >= MAX_SESSIONS) sessions.delete(sessions.keys().next().value);
       sessions.set(sid, Date.now());

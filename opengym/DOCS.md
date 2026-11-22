@@ -9,6 +9,13 @@ One port, `8780/tcp`, plain http: `http://<this box>:8780/`. Use it from the hom
 a private VPN such as Tailscale (WireGuard encrypts the traffic). Never forward the port on the
 router and never publish it with Tailscale Funnel.
 
+To use it from anywhere without a VPN, put it behind an https reverse proxy (for example the NGINX
+SSL proxy app with an extra server block) and set `origin` to that https address. The sign-in page
+is then public: keep `invite_only` on and use a strong password. The proxy must overwrite
+`X-Forwarded-For` with the client's address; the app trusts that header only from the Supervisor
+network (172.30.32.0/23), so its per-address sign-in limits see real visitors. One origin only:
+after switching to https, sign-in at the plain http address stops working.
+
 Passkeys need https, so on this plain-http address you sign in with **name + password**
 (`password_login`, on by default).
 
@@ -21,10 +28,11 @@ code from Settings → Account → Admin dashboard.
 ## Options
 - `origin`: the exact address you open the app at (scheme, host, port). Sessions and links use it.
 - `password_login`, `invite_only`, `allow_guest`: sign-in rules (guests keep data only in the browser).
-- `webhooks`: lets a profile send signed webhooks (workout finished, record, weigh-in), also to
-  addresses on the home network, for example a Home Assistant webhook trigger. While it is on,
-  every signed-in profile can make the app send requests into your home network, so keep sign-up
-  invite-only and invite only people you trust. Off by default.
+- `webhooks`: lets a profile send signed webhooks (workout finished, record, weigh-in). Plain http
+  and private addresses are allowed ONLY to Home Assistant itself (the Supervisor gateway, the name
+  `homeassistant`): this app patches upstream's "whole home network" rule at build time, so a
+  signed-in profile cannot make the app call other devices on your network. Use
+  `http://homeassistant:8123/api/webhook/<id>`. Off by default.
 - `default_lang`: language for new profiles.
 
 ## Data and backup

@@ -24,6 +24,21 @@ RUN set -eu; \
     grep -q 'server.listen(PORT, () =>' /app/server.js; \
     sed -i "s|server.listen(PORT, () =>|server.listen(PORT, '127.0.0.1', () =>|" /app/server.js; \
     grep -q "server.listen(PORT, '127.0.0.1', () =>" /app/server.js
+# Webhooks to private addresses: upstream's INTEGRATIONS_ALLOW_LAN opens the WHOLE home network and
+# tailnet (10/8, 172.16/12, 192.168/16, 100.64/10). Since 22 Nov 2026 the app is public behind
+# an https proxy, so one stolen password must not mean blind POSTs to every
+# LAN admin page. Narrow it to the addresses in ALLOWED_PRIVATE_IPS only (prepare.mjs sets
+# Home Assistant's Supervisor-network address). The build fails if upstream changes these lines.
+RUN set -eu; \
+    f=/app/net-guard.js; \
+    grep -qF 'if (plain) return allowLan && (isLanAddr(v) || isAllowedPrivateAddr(v));' "$f"; \
+    grep -qF '  return allowLan && isLanAddr(v);' "$f"; \
+    sed -i 's/if (plain) return allowLan \&\& (isLanAddr(v) || isAllowedPrivateAddr(v));/if (plain) return allowLan \&\& isAllowedPrivateAddr(v);/' "$f"; \
+    sed -i 's/^  return allowLan \&\& isLanAddr(v);$/  return allowLan \&\& isAllowedPrivateAddr(v);/' "$f"; \
+    grep -qF 'if (plain) return allowLan && isAllowedPrivateAddr(v);' "$f"; \
+    grep -qF '  return allowLan && isAllowedPrivateAddr(v);' "$f"; \
+    ! grep -qF 'allowLan && isLanAddr(v)' "$f"; \
+    ! grep -qF '(isLanAddr(v) || isAllowedPrivateAddr(v))' "$f"
 COPY rootfs/og/ /og/
 RUN chmod 0755 /og /og/run.sh && chmod 0644 /og/*.mjs /og/nginx.conf /og/default.conf.template
 

@@ -2,8 +2,10 @@
 # Published copy. Set the option origin to the exact address you open the app at before the first start.
 # Upstream: github.com/DuarteSantos8/openGym (AGPL-3.0), API + web images pinned in build.yaml / Dockerfile.
 # Reached on ONE host port (8780), from the LAN and over Tailscale. Never port-forward it, never Funnel it.
+# Public since 22 Nov 2026 through the NGINX SSL proxy app (ha-config nginx_proxy/opengym.conf):
+# its own https address (see ha-config CLAUDE.md, openGym). Port 8780 itself is still never forwarded.
 name: openGym
-version: "0.1.1"
+version: "0.1.2"
 slug: opengym
 description: Self-hosted gym and body-weight log (openGym 1.4.5), invite-only, one port
 url: https://github.com/DuarteSantos8/openGym

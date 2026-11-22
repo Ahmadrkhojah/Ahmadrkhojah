@@ -16,10 +16,19 @@ test('options map to the API environment', () => {
   assert.equal(env.FIRST_USER_ADMIN, '1');
 });
 
+test('webhooks reach Home Assistant only, and the public https origin is accepted', () => {
+  const env = envFromOptions({ origin: 'https://gym.example.com:8443', webhooks: true });
+  assert.equal(env.ORIGIN, 'https://gym.example.com:8443');
+  assert.equal(env.RP_ID, 'gym.example.com');
+  assert.equal(env.ALLOWED_PRIVATE_IPS, '172.30.32.0/31');
+  assert.doesNotThrow(() => envText(env));
+});
+
 test('webhooks off leaves integrations unset', () => {
   const env = envFromOptions({ webhooks: false });
   assert.equal(env.INTEGRATIONS, undefined);
   assert.equal(env.INTEGRATIONS_ALLOW_LAN, undefined);
+  assert.equal(env.ALLOWED_PRIVATE_IPS, undefined);
 });
 
 test('only boolean true switches a flag on', () => {

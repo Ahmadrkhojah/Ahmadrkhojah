@@ -50,6 +50,9 @@ export function envFromOptions(raw) {
     // Lets a signed-in profile send webhooks to private addresses (Home Assistant on the
     // Supervisor network gateway). Fine on an invite-only, one-household instance.
     env.INTEGRATIONS_ALLOW_LAN = '1';
+    // ...but only to Home Assistant itself: the Dockerfile narrows upstream's "whole home network"
+    // rule to this list: the Supervisor network gateway, which is `homeassistant`. 22 Nov 2026.
+    env.ALLOWED_PRIVATE_IPS = '172.30.32.0/31';
   }
   return env;
 }

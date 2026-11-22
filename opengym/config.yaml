@@ -1,0 +1,44 @@
+# openGym: self-hosted gym log, as a Home Assistant app.
+# Published copy. Set the option origin to the exact address you open the app at before the first start.
+# Upstream: github.com/DuarteSantos8/openGym (AGPL-3.0), API + web images pinned in build.yaml / Dockerfile.
+# Reached on ONE host port (8780), from the LAN and over Tailscale. Never port-forward it, never Funnel it.
+name: openGym
+version: "0.1.0"
+slug: opengym
+description: Self-hosted gym and body-weight log (openGym 1.4.5), invite-only, one port
+url: https://github.com/DuarteSantos8/openGym
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: application
+boot: auto
+# No Supervisor or Home Assistant API, no host network, no `map:`, no privileges, no devices.
+hassio_api: false
+homeassistant_api: false
+host_network: false
+ports:
+  8780/tcp: 8780
+ports_description:
+  8780/tcp: openGym web app (plain http; reach it over Tailscale or the home LAN only)
+webui: http://[HOST]:[PORT:8780]/
+watchdog: tcp://[HOST]:[PORT:8780]
+# Upstream writes *.tmp files atomically; a hot backup must not catch them.
+backup_exclude:
+  - "*.tmp"
+  - "*.invite-tmp"
+options:
+  origin: http://localhost:8780
+  password_login: true
+  invite_only: true
+  allow_guest: false
+  # On lets every signed-in profile send webhooks to private addresses (see DOCS.md).
+  webhooks: false
+  default_lang: en
+schema:
+  origin: "match(^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$)"
+  password_login: bool
+  invite_only: bool
+  allow_guest: bool
+  webhooks: bool
+  default_lang: "match(^[a-z]{2}(-[A-Za-z]{2})?$)"

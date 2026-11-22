@@ -1,0 +1,5 @@
+# openGym's own API image, pinned (it carries node + the API in /app). The web image (nginx +
+# the built app) is pinned in the Dockerfile's first stage; bump BOTH to the same version.
+build_from:
+  aarch64: ghcr.io/duartesantos8/opengym-api:1.4.5
+  amd64: ghcr.io/duartesantos8/opengym-api:1.4.5

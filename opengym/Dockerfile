@@ -27,6 +27,9 @@ RUN set -eu; \
 COPY rootfs/og/ /og/
 RUN chmod 0755 /og /og/run.sh && chmod 0644 /og/*.mjs /og/nginx.conf /og/default.conf.template
 
-# Supervisor's watchdog checks the port; upstream's health check would write to /data every 30 s.
-HEALTHCHECK NONE
+# Our own health check: nginx's static page only. Upstream's (inherited) one calls /api/health,
+# which writes a file under /data every 30 s. Not `HEALTHCHECK NONE`: Supervisor then waits for a
+# "healthy" event that never comes and the app stays in state "startup" (0.1.0, 22 Nov 2026).
+HEALTHCHECK --interval=60s --timeout=5s --start-period=30s --retries=3 \
+  CMD wget --spider -q http://127.0.0.1:8780/ || exit 1
 ENTRYPOINT ["/sbin/tini", "-s", "-g", "--", "/og/run.sh"]

@@ -3,7 +3,7 @@
 # Upstream: github.com/DuarteSantos8/openGym (AGPL-3.0), API + web images pinned in build.yaml / Dockerfile.
 # Reached on ONE host port (8780), from the LAN and over Tailscale. Never port-forward it, never Funnel it.
 name: openGym
-version: "0.1.0"
+version: "0.1.1"
 slug: opengym
 description: Self-hosted gym and body-weight log (openGym 1.4.5), invite-only, one port
 url: https://github.com/DuarteSantos8/openGym

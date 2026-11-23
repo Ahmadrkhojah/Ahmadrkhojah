@@ -42,6 +42,12 @@ const TAG_RX = /^[a-z][a-z0-9-]{1,20}$/;
 const FILE_RX = /^[a-z0-9][a-z0-9-]{0,60}\.json$/;
 const EDIT_ID_RX = /^[a-z0-9][a-z0-9-]{1,39}$/;
 const HOOK_RX = /^[A-Za-z0-9_-]{16,128}$/;
+// Control, zero-width, bidi-override and BOM characters: invisible in the app, so a name holding
+// one looks like another name and never matches it (audit 23 Nov 2026).
+const BAD_NAME_RX = /[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/;
+// openGym's admin socket refuses a request line over 4096 characters (admin-socket.js MAX_LINE);
+// the rename map must leave room for the rest of the house.edit message.
+const RENAME_MAX_CHARS = 3200;
 const log = (...a) => console.log('[house]', new Date().toISOString(), ...a);
 
 /** Today's date in the house's time zone: UTC+3 all year, no DST (change UTC_OFFSET_H for another). */
@@ -60,9 +66,10 @@ export function readEdit(e) {
     const ents = Object.entries(e.rename);
     if (ents.length > 60) return { error: 'edit rename has more than 60 entries' };
     for (const [o, n] of ents) {
-      if (typeof n !== 'string' || !o.trim() || o.length > 80 || !n.trim() || n.length > 80 || /[\u0000-\u001f]/.test(o + n)) return { error: 'edit rename names must be 1-80 characters, no control characters' };
+      if (typeof n !== 'string' || !o.trim() || o.length > 80 || !n.trim() || n.length > 80 || BAD_NAME_RX.test(o + n)) return { error: 'edit rename names must be 1-80 characters, no control or invisible characters' };
     }
     rename = Object.fromEntries(ents);
+    if (JSON.stringify(rename).length > RENAME_MAX_CHARS) return { error: `edit rename is too long (at most ${RENAME_MAX_CHARS} characters as JSON; split it into two edits)` };
   }
   let plan = null;
   if (e.plan != null) {
@@ -151,7 +158,10 @@ export function statsEvent(s) {
 function loadJson(file, fallback) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; } }
 function writeJson(file, value, mode = 0o600) {
   const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', { mode });
+  // A .tmp left by a crash (or put there by someone else) keeps ITS mode under writeFileSync's
+  // `mode`, so remove it and create the file fresh (audit 23 Nov 2026; prepare.mjs does the same).
+  fs.rmSync(tmp, { force: true });
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', { mode, flag: 'wx' });
   fs.renameSync(tmp, file);
 }
 
@@ -204,12 +214,17 @@ async function main() {
       // The profile list (it reads every profile's file) only every USERS_EVERY polls.
       if (!users || ++tick % USERS_EVERY === 0) users = (await ask({ cmd: 'house.users' })).users;
       const taken = new Set();
+      // One decision per poll: which profile is whose. The rename, edit and follow steps use this
+      // map, never their own findUser call, so two people can never act on one profile (audit 23 Nov 2026).
+      const userOfTag = new Map();
 
       for (const person of man.people) {
         const row = { label: person.label };
         status.people[person.tag] = row;
         // Invite codes
-        if (person.invite && !person.owner && (st.invites[person.tag]?.gen || 0) < person.invite) {
+        if (person.invite && !person.owner && (st.invites[person.tag]?.gen || 0) < person.invite && man.dryRun) {
+          row.inviteDryRun = 'would make an invite code';
+        } else if (person.invite && !person.owner && (st.invites[person.tag]?.gen || 0) < person.invite) {
           try {
             const r = await ask({ cmd: 'house.invite', tag: person.tag, label: person.label, again: person.invite > 1 });
             const codes = loadJson(path.join(PLAN_DIR, 'invites.json'), {});
@@ -228,6 +243,7 @@ async function main() {
         // Their profile
         const u = findUser(person, users, taken);
         if (u) taken.add(u.id);
+        userOfTag.set(person.tag, u);
         row.profile = u ? (u.synced ? 'synced' : 'made, not synced yet') : 'not yet';
         if (u?.inviteTag === person.tag) row.invite = 'used';
         // Their plan
@@ -263,7 +279,7 @@ async function main() {
         const row = status.people[person.tag];
         const done = st.renamed[person.tag];
         if (done && done.prefix === person.renamePrefix) { row.rename = { status: done.status, at: done.at, count: done.renamed.length, renamed: done.renamed, kept: done.kept, twice: done.twice, backup: done.backup || null }; continue; }
-        const u = findUser(person, users);
+        const u = userOfTag.get(person.tag);
         if (!u || !u.synced) { row.rename = { status: 'waiting for the profile' }; continue; }
         try {
           const r = await ask({ cmd: 'house.rename', uid: u.id, prefix: person.renamePrefix, dryRun: man.dryRun });
@@ -283,13 +299,13 @@ async function main() {
         if (!ed) continue;
         const row = status.people[person.tag];
         const done = st.edited[person.tag]?.[ed.id];
-        if (done) { row.edit = { id: ed.id, status: done.status, at: done.at, renamed: done.renamed, kept: done.kept, missing: done.missing, plan: done.plan, week: done.week, backup: done.backup || null }; continue; }
-        const u = findUser(person, users);
+        if (done) { row.edit = { id: ed.id, status: done.status, at: done.at, renamed: done.renamed, kept: done.kept, missing: done.missing, plan: done.plan, week: done.week, ...(done.weekUnmatched ? { weekUnmatched: done.weekUnmatched } : {}), backup: done.backup || null }; continue; }
+        const u = userOfTag.get(person.tag);
         if (!u || !u.synced) { row.edit = { id: ed.id, status: 'waiting for the profile' }; continue; }
         if (person.plan && !st.applied[person.tag]) { row.edit = { id: ed.id, status: 'waiting for the plan' }; continue; }
         try {
           const r = await ask({ cmd: 'house.edit', uid: u.id, id: ed.id, rename: ed.rename, file: ed.plan, weekReplace: ed.weekReplace, dryRun: man.dryRun });
-          const res = { status: r.status, renamed: r.renamed, kept: r.kept, missing: r.missing, plan: r.plan ? r.plan.status : null, week: r.week, backup: r.backup || null };
+          const res = { status: r.status, renamed: r.renamed, kept: r.kept, missing: r.missing, plan: r.plan ? r.plan.status : null, week: r.week, ...(r.weekUnmatched ? { weekUnmatched: r.weekUnmatched } : {}), backup: r.backup || null };
           row.edit = { id: ed.id, ...res };
           if (!man.dryRun) {
             (st.edited[person.tag] = st.edited[person.tag] || {})[ed.id] = { at: new Date().toISOString(), ...res };
@@ -302,7 +318,7 @@ async function main() {
 
       // Live workout + weekly numbers of the followed person
       const fp = man.people.find(p => p.tag === man.follow);
-      const fu = fp ? findUser(fp, users) : null;
+      const fu = fp ? userOfTag.get(fp.tag) || null : null;
       status.follow = fp ? { tag: fp.tag, profile: !!fu } : null;
       if (fu) {
         const now = Date.now();

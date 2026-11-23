@@ -36,6 +36,9 @@ const CIRCUIT = {                                          // frontend lib/circu
 const MUSCLE_MODEL = 2;
 
 const isMap = v => !!v && typeof v === 'object' && !Array.isArray(v);
+// Id maps without a prototype: a plan id like "constructor" must never find Object's (upstream
+// programmes.js importedProgramme guards the same way with Object.hasOwn).
+const idMap = () => Object.create(null);
 const clone = v => JSON.parse(JSON.stringify(v));
 const clampInt = (v, [lo, hi, def]) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : def; };
 const restSec = v => { const n = Math.round(Number(v)) || 0; return n > 0 ? n : 0; };
@@ -46,6 +49,8 @@ export function newId(rand = crypto.randomBytes) {
   const r = BigInt('0x' + rand(4).toString('hex')).toString(36).padStart(5, '0').slice(-5);
   return Date.now().toString(36) + r;
 }
+
+const nameKey = s => String(s || '').normalize('NFKC').trim().toLowerCase();
 
 class PlanError extends Error { constructor(code, msg) { super(msg); this.code = code; } }
 
@@ -121,11 +126,16 @@ export function readPlan(raw) {
     if (r.ex.length > MAX_ROWS) throw new PlanError('size', `routine "${r.name}" has too many rows`);
     return { ...r, ex: r.ex.filter(e => isMap(e) && typeof e.id === 'string' && e.id).map(cleanRow) };
   });
+  const seenName = new Set(), seenId = new Set();
+  for (const r of routines) {
+    const k = nameKey(r.name);
+    if (seenName.has(k)) throw new PlanError('duplicate', `routine name "${r.name.trim()}" is in the plan twice`);
+    if (r.id != null && seenId.has(String(r.id))) throw new PlanError('duplicate', `routine id "${String(r.id).slice(0, 40)}" is in the plan twice`);
+    seenName.add(k); if (r.id != null) seenId.add(String(r.id));
+  }
   const programmes = Array.isArray(d.programmes) && !(Number(d.programme_fmt) > 1) ? d.programmes.filter(isMap).slice(0, 32) : [];
   return { name: String(d.name || '').trim(), routines, customEx, week: isMap(d.week) ? d.week : {}, programmes };
 }
-
-const nameKey = s => String(s || '').normalize('NFKC').trim().toLowerCase();
 
 /** Which of the plan's routine names the profile already has. */
 export function alreadyThere(S, plan) {
@@ -147,7 +157,7 @@ export function mergeInto(S, plan, { schedule = true, now = Date.now(), id = new
   if (have.length) return { status: 'already', have };
   if (!Array.isArray(S.routines)) S.routines = [];
   if (!Array.isArray(S.customEx)) S.customEx = [];
-  const exMap = {};
+  const exMap = idMap();
   let customs = 0;
   for (const c of plan.customEx) {
     const clean = cleanCustom(c);
@@ -158,7 +168,7 @@ export function mergeInto(S, plan, { schedule = true, now = Date.now(), id = new
     S.customEx.push({ ...clean, id: nid, ...(clean.secondaries ? { sm: clean.secondaries } : {}), custom: true });
     customs++;
   }
-  const ridMap = {};
+  const ridMap = idMap();
   for (const r of plan.routines) {
     const nid = id();
     ridMap[r.id] = nid;
@@ -225,6 +235,8 @@ export function applyEdit(S, { rename = {}, plan = null, weekReplace = false } =
   const renamed = [], kept = [], missing = [];
   const routines = Array.isArray(S.routines) ? S.routines.filter(isMap) : [];
   const progs = isMap(S.programmes) ? Object.values(S.programmes).filter(isMap) : [];
+  // The name a rename writes: NFKC, trimmed (audit 23 Nov 2026: it was stored exactly as typed).
+  const target = v => String(v).normalize('NFKC').trim().slice(0, 80);
   const entries = Object.entries(rename);
   // Match every key against the ORIGINAL names first, so a chain (A -> B, B -> C) renames each routine once.
   const hits = entries.map(([o]) => ({ rs: routines.filter(r => nameKey(r.name) === nameKey(o)), ps: progs.filter(p => nameKey(p.name) === nameKey(o)) }));
@@ -233,9 +245,12 @@ export function applyEdit(S, { rename = {}, plan = null, weekReplace = false } =
   // dropping one only frees fewer names, so this ends. A second key for the same name (case or NFKC)
   // is kept. Review fix 23 Nov 2026: before this, a rename onto a name whose rename was kept or a
   // no-op made two routines with the same name.
+  // A rename is a no-op only when every name it hits is already exactly the new one, so a
+  // case-only rename ("push day" -> "Push Day") goes ahead (audit 23 Nov 2026: it was dropped).
+  const noop = i => [...hits[i].rs, ...hits[i].ps].every(x => x.name === target(entries[i][1]));
   const go = new Set(), seen = new Set();
-  entries.forEach(([o, n], i) => {
-    if ((hits[i].rs.length || hits[i].ps.length) && nameKey(n) !== nameKey(o) && !seen.has(nameKey(o))) go.add(i);
+  entries.forEach(([o], i) => {
+    if ((hits[i].rs.length || hits[i].ps.length) && !noop(i) && !seen.has(nameKey(o))) go.add(i);
     seen.add(nameKey(o));
   });
   for (let again = true; again;) {
@@ -252,21 +267,34 @@ export function applyEdit(S, { rename = {}, plan = null, weekReplace = false } =
   entries.forEach(([oldName, newName], i) => {
     const { rs, ps } = hits[i];
     if (!rs.length && !ps.length) { missing.push(oldName); return; }
-    if (nameKey(newName) === nameKey(oldName)) return; // already the name wanted: nothing to do
+    if (noop(i)) return; // already exactly the name wanted: nothing to do
     if (!go.has(i)) { kept.push(oldName); return; }
-    for (const r of rs) r.name = newName;
-    for (const p of ps) p.name = newName;
-    renamed.push([oldName, newName]);
+    const nn = target(newName);
+    for (const r of rs) r.name = nn;
+    for (const p of ps) p.name = nn;
+    renamed.push([oldName, nn]);
   });
-  let did = null, week = 'off';
+  let did = null, week = 'off', weekUnmatched;
+  const days = w => JSON.stringify(WEEK_DAYS.map(d => (isMap(w) ? [].concat(w[d] ?? []) : [])));
+  const before = days(S.week);
   if (plan) {
+    // A week replace from a plan that schedules none of its own routines would wipe the profile's
+    // week to all rest days: refuse that part (audit 23 Nov 2026).
+    const planIds = new Set(plan.routines.map(r => String(r.id)));
+    const planDays = WEEK_DAYS.filter(d => Object.hasOwn(plan.week, d) && [].concat(plan.week[d]).some(x => planIds.has(String(x))));
+    if (weekReplace && !planDays.length) { weekReplace = false; week = 'kept'; weekUnmatched = []; }
     did = mergeInto(S, plan, { schedule: weekReplace ? 'replace' : false, ...opts });
     if (did.status === 'unit') return { renamed, kept, missing, plan: did, week, changed: false, unit: true };
     if (did.status === 'already' && weekReplace) {
       const byName = new Map();
       for (const r of Array.isArray(S.routines) ? S.routines.filter(isMap) : []) if (!byName.has(nameKey(r.name))) byName.set(nameKey(r.name), r.id);
-      const ridMap = {};
+      const ridMap = idMap();
       for (const r of plan.routines) if (byName.has(nameKey(r.name))) ridMap[r.id] = byName.get(nameKey(r.name));
+      // Every routine the plan's week names must be in the profile, or the week is left as it is
+      // (a partly-present plan would otherwise lose those days silently; audit 23 Nov 2026).
+      const used = new Set(planDays.flatMap(d => [].concat(plan.week[d]).map(String)));
+      weekUnmatched = plan.routines.filter(r => used.has(String(r.id)) && !ridMap[r.id]).map(r => r.name);
+      if (weekUnmatched.length) return { renamed, kept, missing, plan: did, week: 'kept', weekUnmatched, changed: renamed.length > 0 };
       // Like mergeInto: keep the week's other keys, replace only the day lists.
       const next = { ...(isMap(S.week) ? S.week : {}) };
       for (const d of WEEK_DAYS) delete next[d];
@@ -276,9 +304,9 @@ export function applyEdit(S, { rename = {}, plan = null, weekReplace = false } =
         if (ids.length) next[d] = ids;
       }
       S.week = next;
-      week = 'replaced';
-    } else if (did.status === 'added') week = did.week === 'set' || did.week === 'replaced' ? 'replaced' : did.week;
+      week = days(next) === before ? 'unchanged' : 'replaced';
+    } else if (did.status === 'added' && week !== 'kept') week = did.week === 'set' || did.week === 'replaced' ? 'replaced' : did.week;
   }
   const changed = renamed.length > 0 || did?.status === 'added' || week === 'replaced';
-  return { renamed, kept, missing, plan: did, week, changed };
+  return { renamed, kept, missing, plan: did, week, changed, ...(weekUnmatched ? { weekUnmatched } : {}) };
 }

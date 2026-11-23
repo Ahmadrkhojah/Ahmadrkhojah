@@ -199,7 +199,7 @@ export async function handle(msg, ctx) {
       const ren = msg.rename == null ? {} : msg.rename;
       if (!ren || typeof ren !== 'object' || Array.isArray(ren) || Object.keys(ren).length > 60) return { error: 'bad rename map' };
       for (const [o, n] of Object.entries(ren)) {
-        if (typeof n !== 'string' || !o.trim() || o.length > 80 || !n.trim() || n.length > 80 || /[\u0000-\u001f]/.test(o + n)) return { error: 'bad rename map' };
+        if (typeof n !== 'string' || !o.trim() || o.length > 80 || !n.trim() || n.length > 80 || /[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/.test(o + n)) return { error: 'bad rename map' };
       }
       let plan = null, text = null;
       if (msg.file != null) {
@@ -219,7 +219,7 @@ export async function handle(msg, ctx) {
       const next = JSON.parse(JSON.stringify(cur));
       const did = applyEdit(next, { rename: ren, plan, weekReplace: msg.weekReplace === true });
       if (did.unit) return { error: 'profile not in kg', plan: did.plan };
-      const out = { renamed: did.renamed, kept: did.kept, missing: did.missing, plan: did.plan, week: did.week };
+      const out = { renamed: did.renamed, kept: did.kept, missing: did.missing, plan: did.plan, week: did.week, ...(did.weekUnmatched ? { weekUnmatched: did.weekUnmatched } : {}) };
       if (!did.changed || msg.dryRun === true) return { status: did.changed ? 'would edit' : 'nothing to change', ...out, dryRun: msg.dryRun === true, rev: cur._rev || 0 };
       fs.mkdirSync(BACKUP_DIR, { recursive: true, mode: 0o700 });
       const bak = path.join(BACKUP_DIR, `state-${u.id}-${Date.now()}.json`);

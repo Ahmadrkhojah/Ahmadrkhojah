@@ -39,6 +39,10 @@ RUN set -eu; \
     grep -qF '  return allowLan && isAllowedPrivateAddr(v);' "$f"; \
     ! grep -qF 'allowLan && isLanAddr(v)' "$f"; \
     ! grep -qF '(isLanAddr(v) || isAllowedPrivateAddr(v))' "$f"
+# Plain http:// webhooks may only reach Home Assistant's own port 8123 (audit 23 Nov 2026: the
+# Supervisor-network address also publishes ha-mcp, Mosquitto, z2m, backups and openGym itself).
+COPY build/patch-netguard.mjs /tmp/patch-netguard.mjs
+RUN node /tmp/patch-netguard.mjs /app/net-guard.js && rm /tmp/patch-netguard.mjs
 # House commands on openGym's own admin socket (23 Nov 2026; rootfs/og/house-cmds.mjs explains).
 # One line in front of upstream's "unknown command": a "house.*" command goes to our module with the
 # server's own data and functions, so plans and invites go through openGym's own write paths in its

@@ -308,8 +308,9 @@ test('edit: a rename never lands on a name that stays (review fix 23 Nov)', () =
     assert.equal(did.changed, false);
   }
   const N = { routines: [{ id: 'a', name: 'A', ex: [] }, { id: 'b', name: 'B', ex: [] }] };
-  applyEdit(N, { rename: { B: 'b', A: 'B' } });                            // B -> b is a no-op, so B stays taken
-  assert.deepEqual(names(N), ['A', 'B']);
+  const nd = applyEdit(N, { rename: { B: 'b', A: 'B' } });                 // B -> b is a real case-only rename (audit 23 Nov), and 'b' stays taken
+  assert.deepEqual(names(N), ['A', 'b']);
+  assert.deepEqual(nd.kept, ['A']);
   const D = { routines: [{ id: 'a', name: 'A', ex: [] }] };
   const d = applyEdit(D, { rename: { A: 'X', a: 'Y' } });                  // two keys for one name: the first wins
   assert.deepEqual(names(D), ['X']);

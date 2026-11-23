@@ -1,11 +1,11 @@
 # openGym: self-hosted gym log, as a Home Assistant app.
 # Published copy. Set the option origin to the exact address you open the app at before the first start.
 # Upstream: github.com/DuarteSantos8/openGym (AGPL-3.0), API + web images pinned in build.yaml / Dockerfile.
-# Reached on ONE host port (8780), from the LAN and over Tailscale. Never port-forward it, never Funnel it.
+# ONE host port (8780), plain http, for the home LAN only. Never port-forward it, never Funnel it.
 # Public since 22 Nov 2026 through the NGINX SSL proxy app (ha-config nginx_proxy/opengym.conf):
 # its own https address (see ha-config CLAUDE.md, openGym). Port 8780 itself is still never forwarded.
 name: openGym
-version: "0.1.2"
+version: "0.2.0"
 slug: opengym
 description: Self-hosted gym and body-weight log (openGym 1.4.5), invite-only, one port
 url: https://github.com/DuarteSantos8/openGym
@@ -15,14 +15,19 @@ arch:
 init: false
 startup: application
 boot: auto
-# No Supervisor or Home Assistant API, no host network, no `map:`, no privileges, no devices.
+# No Supervisor or Home Assistant API, no host network, no privileges, no devices.
+# One map since 0.2.0 (23 Nov 2026): this app's OWN config folder (host /addon_configs/<slug>),
+# mounted at /config, for the house sidecar's plans/ folder. Nothing of Home Assistant's.
+map:
+  - type: addon_config
+    read_only: false
 hassio_api: false
 homeassistant_api: false
 host_network: false
 ports:
   8780/tcp: 8780
 ports_description:
-  8780/tcp: openGym web app (plain http; reach it over Tailscale or the home LAN only)
+  8780/tcp: openGym web app (plain http, home LAN only; outside the house use the https proxy address set as origin)
 webui: http://[HOST]:[PORT:8780]/
 watchdog: tcp://[HOST]:[PORT:8780]
 # Upstream writes *.tmp files atomically; a hot backup must not catch them.
@@ -37,6 +42,9 @@ options:
   # On lets every signed-in profile send webhooks to private addresses (see DOCS.md).
   webhooks: false
   default_lang: en
+  # house_webhook (optional, a password field): the Home Assistant webhook id the house sidecar
+  # posts live-workout, weekly-numbers and plan events to (http://homeassistant:8123/api/webhook/<id>;
+  # the host is fixed in code). Empty = no events. 16-128 of A-Z a-z 0-9 _ -.
 schema:
   origin: "match(^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$)"
   password_login: bool
@@ -44,3 +52,4 @@ schema:
   allow_guest: bool
   webhooks: bool
   default_lang: "match(^[a-z]{2}(-[A-Za-z]{2})?$)"
+  house_webhook: password?

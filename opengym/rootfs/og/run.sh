@@ -3,6 +3,9 @@
 #   prepare.mjs -> /tmp/og/env + /tmp/og/csp (+ first-profile invite while no profile exists)
 #   API  : node /app/server.js as user "og", 127.0.0.1:3000, data in /data/opengym
 #   web  : nginx as user "nginx" on :8780 (upstream's template), the app's only open port
+#   house: node /og/house.mjs as user "og" (plans, invites, live workout and weekly numbers for
+#          Home Assistant; 23 Nov 2026). Opens no port. If it stops, openGym keeps running and the
+#          loop below starts it again after 60 s.
 # If either process stops, the app stops; Supervisor's watchdog starts it again.
 set -eu
 log() { echo "[run] $(date -Iseconds) $*"; }
@@ -15,7 +18,15 @@ chmod o+x,o-rw /data
 chown -h og:og /data/opengym
 find /data/opengym -xdev ! -user og -exec chown -h og:og {} +
 
-node /og/prepare.mjs                       # root: options -> /tmp/og/env, /tmp/og/csp
+# The house folder in this app's own config folder (host: /addon_configs/<slug>/plans): the plan
+# files and manifest go in (written by an admin), status.json and invites.json (0600) come out.
+if [ -d /config ]; then
+  [ -d /config/plans ] || install -d -m 0750 /config/plans
+  chown -h og:og /config/plans
+fi
+
+node /og/prepare.mjs                       # root: options -> /tmp/og/env, /tmp/og/csp, /tmp/og/house.json
+chown og:og /tmp/og/house.json
 su-exec og:og node /og/prepare.mjs --invite  # API user: first-profile invite, if needed
 
 # shellcheck disable=SC1091
@@ -49,9 +60,20 @@ nginx -c /og/nginx.conf -g 'daemon off;' &
 WEB=$!
 log "ready"
 
+# House sidecar, restarted after 60 s if it stops; never takes openGym down with it.
+( while kill -0 "$API" 2>/dev/null; do
+    su-exec og:og node --max-old-space-size=48 /og/house.mjs || true
+    log "house sidecar stopped; starting it again in 60 s"
+    sleep 60
+  done ) &
+SIDE=$!
+
 # Stop both when either ends (tini forwards SIGTERM from Supervisor to this script's group).
 while kill -0 "$API" 2>/dev/null && kill -0 "$WEB" 2>/dev/null; do sleep 5; done
 log "a process stopped; stopping the app"
 kill "$API" "$WEB" 2>/dev/null || true
+# The sidecar too, or `wait` would wait for it forever.
+kill "$SIDE" 2>/dev/null || true
+pkill -f '/og/house.mjs' 2>/dev/null || true
 wait || true
 exit 1

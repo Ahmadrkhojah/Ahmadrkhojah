@@ -39,6 +39,13 @@ RUN set -eu; \
     grep -qF '  return allowLan && isAllowedPrivateAddr(v);' "$f"; \
     ! grep -qF 'allowLan && isLanAddr(v)' "$f"; \
     ! grep -qF '(isLanAddr(v) || isAllowedPrivateAddr(v))' "$f"
+# House commands on openGym's own admin socket (23 Nov 2026; rootfs/og/house-cmds.mjs explains).
+# One line in front of upstream's "unknown command": a "house.*" command goes to our module with the
+# server's own data and functions, so plans and invites go through openGym's own write paths in its
+# own process (never a second writer of db.json or a state file). The socket stays what it was: a
+# Unix socket only the API user can open. The build fails if upstream changes the line.
+COPY build/patch-server.mjs /tmp/patch-server.mjs
+RUN node /tmp/patch-server.mjs /app/server.js && rm /tmp/patch-server.mjs
 COPY rootfs/og/ /og/
 RUN chmod 0755 /og /og/run.sh && chmod 0644 /og/*.mjs /og/nginx.conf /og/default.conf.template
 

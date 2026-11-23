@@ -24,6 +24,17 @@ const DEFAULTS = {
 const ORIGIN_RX = /^https?:\/\/[A-Za-z0-9.-]+(:[0-9]{1,5})?$/;
 const LANG_RX = /^[a-z]{2}(-[A-Za-z]{2})?$/;
 const FIRST_NOTE = 'first profile (made by the HA app at start)';
+const HOOK_RX = /^[A-Za-z0-9_-]{16,128}$/;
+
+/**
+ * The house sidecar's settings (house.mjs): only the Home Assistant webhook id, checked. Written to
+ * /tmp/og/house.json 0600, handed to the API user by run.sh; never in the environment, never logged.
+ * An empty or malformed id means no events to Home Assistant (plans and invites still work).
+ */
+export function houseFromOptions(raw) {
+  const v = raw && typeof raw === 'object' ? raw.house_webhook : undefined;
+  return { webhook: typeof v === 'string' && HOOK_RX.test(v) ? v : null };
+}
 
 /** Options -> environment for the API. Throws on a value that does not match its pattern. */
 export function envFromOptions(raw) {
@@ -124,9 +135,11 @@ function prepareRoot() {
   fs.writeFileSync('/tmp/og/env', envText(env), { mode: 0o644 });
   // The CSP has quotes and spaces, so it travels in its own file (read by run.sh, never sourced).
   fs.writeFileSync('/tmp/og/csp', cspFor(hashes), { mode: 0o644 });
+  const house = houseFromOptions(opts);
+  fs.writeFileSync('/tmp/og/house.json', JSON.stringify(house), { mode: 0o600 });
   console.log(`[prepare] origin ${env.ORIGIN}, password sign-in ${env.PASSWORD_LOGIN === '1' ? 'on' : 'off'}, ` +
     `invite-only ${env.INVITE_ONLY === '1' ? 'on' : 'off'}, guests ${env.ALLOW_GUEST === '1' ? 'on' : 'off'}, ` +
-    `webhooks ${env.INTEGRATIONS ? 'on' : 'off'}`);
+    `webhooks ${env.INTEGRATIONS ? 'on' : 'off'}, house events ${house.webhook ? 'on' : 'off'}`);
 }
 
 /**

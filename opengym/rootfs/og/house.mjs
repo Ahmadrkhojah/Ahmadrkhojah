@@ -195,7 +195,10 @@ async function main() {
         if (u?.inviteTag === person.tag) row.invite = 'used';
         // Their plan
         const done = st.applied[person.tag];
-        if (done) { row.plan = done.status; row.planAt = done.at; }
+        if (done) {
+          row.plan = done.status; row.planAt = done.at;
+          row.result = { routines: done.routines ?? null, programmes: done.programmes ?? null, customEx: done.customEx ?? null, week: done.week ?? null, have: done.have ?? null, backup: done.backup || null };
+        }
         else if (!person.plan) row.plan = 'none';
         else if (!u || !u.synced) row.plan = 'waiting for the profile';
         else {

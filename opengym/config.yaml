@@ -5,7 +5,7 @@
 # Public since 22 Nov 2026 through the NGINX SSL proxy app (ha-config nginx_proxy/opengym.conf):
 # its own https address (see ha-config CLAUDE.md, openGym). Port 8780 itself is still never forwarded.
 name: openGym
-version: "0.2.0"
+version: "0.2.1"
 slug: opengym
 description: Self-hosted gym and body-weight log (openGym 1.4.5), invite-only, one port
 url: https://github.com/DuarteSantos8/openGym

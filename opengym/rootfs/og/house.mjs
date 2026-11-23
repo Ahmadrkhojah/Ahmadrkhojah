@@ -62,6 +62,7 @@ export function readManifest(text) {
       owner: match.owner === true,
       names: (Array.isArray(match.names) ? match.names : []).map(nameKey).filter(Boolean).slice(0, 5),
       invite: Number.isInteger(p.invite) && p.invite > 0 ? p.invite : 0,
+      renamePrefix: typeof p.rename_prefix === 'string' && p.rename_prefix.length >= 2 && p.rename_prefix.length <= 30 ? p.rename_prefix : null,
     });
   }
   const follow = people.some(p => p.tag === m?.follow) ? m.follow : null;
@@ -217,6 +218,26 @@ async function main() {
             row.plan = `not yet: ${e.message}`;
           }
         }
+      }
+
+      // One-off renames: take a name prefix off a person's routines and programmes, once per prefix.
+      st.renamed = st.renamed || {};
+      for (const person of man.people) {
+        if (!person.renamePrefix) continue;
+        const row = status.people[person.tag];
+        const done = st.renamed[person.tag];
+        if (done && done.prefix === person.renamePrefix) { row.rename = { status: done.status, at: done.at, count: done.renamed.length, renamed: done.renamed, kept: done.kept, twice: done.twice, backup: done.backup || null }; continue; }
+        const u = findUser(person, users);
+        if (!u || !u.synced) { row.rename = { status: 'waiting for the profile' }; continue; }
+        try {
+          const r = await ask({ cmd: 'house.rename', uid: u.id, prefix: person.renamePrefix, dryRun: man.dryRun });
+          row.rename = { status: r.status, count: r.renamed.length, renamed: r.renamed, kept: r.kept, twice: r.twice, backup: r.backup || null };
+          if (!man.dryRun) {
+            st.renamed[person.tag] = { prefix: person.renamePrefix, at: new Date().toISOString(), status: r.status, renamed: r.renamed, kept: r.kept, twice: r.twice, backup: r.backup || null };
+            writeJson(STATE_FILE, st);
+            log(`rename for ${person.label}: ${r.status}, ${r.renamed.length} names`);
+          }
+        } catch (e) { row.rename = { status: `not yet: ${e.message}` }; }
       }
 
       // Live workout + weekly numbers of the followed person

@@ -18,6 +18,10 @@
 //                          merges the plan file /config/plans/<file> into that profile (plan-merge.mjs) and writes it with
 //                          commitState(..., { overRead: true, stamped: false }), the same write as
 //                          PUT /api/token/data. Refused for a profile with no document on the server.
+//   house.rename {uid, prefix}  takes a name prefix (e.g. "Home · ") off that profile's routines and
+//                          programmes, through the same write as house.plan (backup first). A name
+//                          that would equal one of the profile's other routines is left as it is.
+//                          Logged workouts are never touched.
 //   house.live {uid}       the profile's live-workout heartbeat (POST /api/activity), or null
 //   house.stats {uid, today}  workouts and sets of this week and last week (Sunday to Saturday,
 //                          the house's week), the app's own week streak, and the last workout's id.
@@ -132,6 +136,51 @@ export async function handle(msg, ctx) {
       if (done.status !== 200) return { error: 'write refused', status: done.status, body: done.body };
       audit(CLI_REQ, 'token.write', { user: u, msg: `house plan ${String(msg.tag || '').slice(0, 20)}: ${did.routines} routines` });
       return { ...did, rev: done.body.rev, backup: path.basename(bak), sha256: crypto.createHash('sha256').update(text).digest('hex').slice(0, 16) };
+    }
+    case 'house.rename': {
+      const u = userOf(ctx, msg.uid);
+      if (!u) return { error: 'no such profile' };
+      if (u.disabled) return { error: 'profile disabled' };
+      const prefix = typeof msg.prefix === 'string' ? msg.prefix : '';
+      if (prefix.length < 2 || prefix.length > 30 || /[\u0000-\u001f]/.test(prefix)) return { error: 'bad prefix' };
+      const cur = ctx.readStateStrict(u.id);
+      if (cur === ctx.UNREADABLE) return { error: 'state unreadable' };
+      if (!cur) return { error: 'not synced', code: 'not-synced' };
+      const next = JSON.parse(JSON.stringify(cur));
+      const key = s => String(s || '').normalize('NFKC').trim().toLowerCase();
+      const routines = Array.isArray(next.routines) ? next.routines.filter(r => r && typeof r === 'object') : [];
+      const others = new Set(routines.filter(r => !String(r.name || '').startsWith(prefix)).map(r => key(r.name)));
+      const renamed = [], kept = [];
+      for (const r of routines) {
+        const name = String(r.name || '');
+        if (!name.startsWith(prefix)) continue;
+        const nn = name.slice(prefix.length).trim().slice(0, 80);
+        if (!nn || others.has(key(nn))) { kept.push(name); continue; }
+        r.name = nn;
+        renamed.push([name, nn]);
+      }
+      const progs = next.programmes && typeof next.programmes === 'object' && !Array.isArray(next.programmes) ? Object.values(next.programmes) : [];
+      for (const p of progs) {
+        if (!p || typeof p !== 'object') continue;
+        const name = String(p.name || '');
+        if (!name.startsWith(prefix)) continue;
+        const nn = name.slice(prefix.length).trim().slice(0, 80);
+        if (!nn) { kept.push(name); continue; }
+        p.name = nn;
+        renamed.push([name, nn]);
+      }
+      const counts = {};
+      for (const r of routines) counts[key(r.name)] = (counts[key(r.name)] || 0) + 1;
+      const twice = Object.entries(counts).filter(([, n]) => n > 1).map(([k, n]) => `${k} x${n}`).slice(0, 40);
+      if (!renamed.length || msg.dryRun === true) return { status: renamed.length ? 'would rename' : 'nothing to rename', renamed, kept, twice, dryRun: msg.dryRun === true };
+      fs.mkdirSync(BACKUP_DIR, { recursive: true, mode: 0o700 });
+      const bak = path.join(BACKUP_DIR, `state-${u.id}-${Date.now()}.json`);
+      fs.writeFileSync(bak, JSON.stringify(cur), { mode: 0o600, flag: 'wx' });
+      for (const k of ['routines', 'customEx']) if (Array.isArray(next[k])) next[k] = ctx.records(next[k]);
+      const done = ctx.commitState(u.id, cur, next, { overRead: true, stamped: false });
+      if (done.status !== 200) return { error: 'write refused', status: done.status, body: done.body };
+      audit(CLI_REQ, 'token.write', { user: u, msg: `house rename: ${renamed.length} names` });
+      return { status: 'renamed', renamed, kept, twice, backup: path.basename(bak), rev: done.body.rev };
     }
     case 'house.live': {
       const u = userOf(ctx, msg.uid);

@@ -22,6 +22,14 @@
 //                          programmes, through the same write as house.plan (backup first). A name
 //                          that would equal one of the profile's other routines is left as it is.
 //                          Logged workouts are never touched.
+//   house.edit {uid, id, rename, file, weekReplace, dryRun}
+//                          a one-off edit in ONE read-modify-write (the sidecar applies each edit id once):
+//                          renames routines/programmes by exact name (a rename that would clash with another
+//                          routine is left as it is and listed in `kept`; unknown names in `missing`), then
+//                          optionally merges the plan file /config/plans/<file> (renames first, so a renamed
+//                          routine counts as already there), and with weekReplace sets the profile's week from
+//                          that plan even when it has one. The logic is applyEdit() in plan-merge.mjs. One
+//                          backup copy, one commitState, one audit line. Logged workouts are never touched.
 //   house.live {uid}       the profile's live-workout heartbeat (POST /api/activity), or null
 //   house.stats {uid, today}  workouts and sets of this week and last week (Sunday to Saturday,
 //                          the house's week), the app's own week streak, and the last workout's id.
@@ -30,13 +38,14 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { readPlan, mergeInto } from './plan-merge.mjs';
+import { readPlan, mergeInto, applyEdit } from './plan-merge.mjs';
 import { streakWeeks } from '/app/trainers/projections.js';
 import { workoutPayload } from '/app/integrations/events.js';
 
 const TAG_RX = /^[a-z][a-z0-9-]{1,20}$/;
 const ISO_RX = /^\d{4}-\d{2}-\d{2}$/;
 const UID_RX = /^[A-Za-z0-9_-]{1,80}$/;
+const EDIT_ID_RX = /^[a-z0-9][a-z0-9-]{1,39}$/;
 const FILE_RX = /^[a-z0-9][a-z0-9-]{0,60}\.json$/;
 export const PLAN_DIR = '/config/plans';
 export const BACKUP_DIR = '/data/opengym/house/backups';
@@ -181,6 +190,45 @@ export async function handle(msg, ctx) {
       if (done.status !== 200) return { error: 'write refused', status: done.status, body: done.body };
       audit(CLI_REQ, 'token.write', { user: u, msg: `house rename: ${renamed.length} names` });
       return { status: 'renamed', renamed, kept, twice, backup: path.basename(bak), rev: done.body.rev };
+    }
+    case 'house.edit': {
+      const u = userOf(ctx, msg.uid);
+      if (!u) return { error: 'no such profile' };
+      if (u.disabled) return { error: 'profile disabled' };
+      if (!EDIT_ID_RX.test(String(msg.id || ''))) return { error: 'bad edit id' };
+      const ren = msg.rename == null ? {} : msg.rename;
+      if (!ren || typeof ren !== 'object' || Array.isArray(ren) || Object.keys(ren).length > 60) return { error: 'bad rename map' };
+      for (const [o, n] of Object.entries(ren)) {
+        if (typeof n !== 'string' || !o.trim() || o.length > 80 || !n.trim() || n.length > 80 || /[\u0000-\u001f]/.test(o + n)) return { error: 'bad rename map' };
+      }
+      let plan = null, text = null;
+      if (msg.file != null) {
+        if (!FILE_RX.test(String(msg.file))) return { error: 'bad file name' };
+        try {
+          const f = path.join(PLAN_DIR, msg.file);
+          const st = fs.lstatSync(f);
+          if (!st.isFile() || st.size > PLAN_MAX) return { error: 'plan file missing or too big' };
+          text = fs.readFileSync(f, 'utf8');
+        } catch { return { error: 'plan file missing' }; }
+        try { plan = readPlan(text); } catch (e) { return { error: 'bad plan', code: e.code || 'bad', detail: String(e.message).slice(0, 120) }; }
+      } else if (msg.weekReplace === true) return { error: 'week replace needs a plan' };
+      // Read, change and write without an await in between (see house.plan).
+      const cur = ctx.readStateStrict(u.id);
+      if (cur === ctx.UNREADABLE) return { error: 'state unreadable' };
+      if (!cur) return { error: 'not synced', code: 'not-synced' };
+      const next = JSON.parse(JSON.stringify(cur));
+      const did = applyEdit(next, { rename: ren, plan, weekReplace: msg.weekReplace === true });
+      if (did.unit) return { error: 'profile not in kg', plan: did.plan };
+      const out = { renamed: did.renamed, kept: did.kept, missing: did.missing, plan: did.plan, week: did.week };
+      if (!did.changed || msg.dryRun === true) return { status: did.changed ? 'would edit' : 'nothing to change', ...out, dryRun: msg.dryRun === true, rev: cur._rev || 0 };
+      fs.mkdirSync(BACKUP_DIR, { recursive: true, mode: 0o700 });
+      const bak = path.join(BACKUP_DIR, `state-${u.id}-${Date.now()}.json`);
+      fs.writeFileSync(bak, JSON.stringify(cur), { mode: 0o600, flag: 'wx' });
+      for (const k of ['routines', 'customEx']) if (Array.isArray(next[k])) next[k] = ctx.records(next[k]);
+      const done = ctx.commitState(u.id, cur, next, { overRead: true, stamped: false });
+      if (done.status !== 200) return { error: 'write refused', status: done.status, body: done.body };
+      audit(CLI_REQ, 'token.write', { user: u, msg: `house edit ${msg.id}: ${did.renamed.length} names${did.plan?.status === 'added' ? `, plan ${did.plan.routines} routines` : ''}, week ${did.week}` });
+      return { status: 'edited', ...out, backup: path.basename(bak), rev: done.body.rev };
     }
     case 'house.live': {
       const u = userOf(ctx, msg.uid);

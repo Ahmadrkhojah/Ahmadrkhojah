@@ -7,8 +7,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { readPlan, mergeInto, cleanRow, alreadyThere } from '../rootfs/og/plan-merge.mjs';
-import { readManifest, findUser, liveStep, localToday, statsEvent, GONE_MS, LIVE_REFRESH_MS } from '../rootfs/og/house.mjs';
+import { readPlan, mergeInto, applyEdit, cleanRow, alreadyThere } from '../rootfs/og/plan-merge.mjs';
+import { readManifest, readEdit, findUser, liveStep, localToday, statsEvent, GONE_MS, LIVE_REFRESH_MS } from '../rootfs/og/house.mjs';
 import { houseFromOptions } from '../rootfs/og/prepare.mjs';
 
 const PLAN = {
@@ -198,4 +198,127 @@ test('the house webhook option is checked', () => {
   assert.equal(houseFromOptions({ house_webhook: 'short' }).webhook, null);
   assert.equal(houseFromOptions({ house_webhook: 'abcdefabcdefabcdef/../x' }).webhook, null);
   assert.equal(houseFromOptions({}).webhook, null);
+});
+
+test('mergeInto: default week behaviour unchanged, schedule "replace" overwrites an existing week', () => {
+  const mk = () => ({ unit: 'kg', routines: [{ id: 'm', name: 'Mine', ex: [] }], week: { 1: ['m'], 5: ['m'] } });
+  const a = mk();
+  assert.equal(mergeInto(a, readPlan(PLAN), { id: ids }).week, 'kept');
+  assert.deepEqual(a.week, { 1: ['m'], 5: ['m'] });
+  const off = mk();
+  assert.equal(mergeInto(off, readPlan(PLAN), { id: ids, schedule: false }).week, 'off');
+  const b = mk();
+  const did = mergeInto(b, readPlan(PLAN), { id: ids, schedule: 'replace' });
+  assert.equal(did.week, 'replaced');
+  const fb = b.routines.find(r => r.name === 'T · Full Body'), warm = b.routines.find(r => r.name === 'T · Warm-up');
+  assert.deepEqual(b.week, { 0: [warm.id, fb.id], 2: [fb.id] });   // days 1 and 5 are rest days now
+  assert.equal(mergeInto({ unit: 'kg' }, readPlan(PLAN), { id: ids, schedule: 'replace' }).week, 'set'); // no week before: plain set
+});
+
+test('edit: rename map with a clash and a missing name', () => {
+  const S = { unit: 'kg', routines: [
+    { id: 'a', name: 'Fay · Full Body A (gym)', ex: [] }, { id: 'b', name: 'Fay · Full Body B', ex: [] },
+    { id: 'c', name: 'Full Body B', ex: [] }, { id: 'd', name: 'Fay · Swap 1', ex: [] }, { id: 'e', name: 'Fay · Swap 2', ex: [] },
+  ], programmes: { p1: { id: 'p1', name: 'Fay · Gym 8 weeks' } }, workouts: [{ id: 'w', d: '2026-11-20' }] };
+  const before = JSON.stringify(S.workouts);
+  const did = applyEdit(S, { rename: {
+    'Fay · Full Body A (gym)': 'Full Body A', 'Fay · Full Body B': 'Full Body B',   // clash with routine c
+    'Fay · Gym 8 weeks': 'Gym 8 weeks', 'Nope': 'X',
+    'Fay · Swap 1': 'Swap', 'Fay · Swap 2': 'swap',                                 // second takes the name the first took
+  } });
+  assert.deepEqual(did.renamed, [['Fay · Full Body A (gym)', 'Full Body A'], ['Fay · Gym 8 weeks', 'Gym 8 weeks'], ['Fay · Swap 1', 'Swap']]);
+  assert.deepEqual(did.kept, ['Fay · Full Body B', 'Fay · Swap 2']);
+  assert.deepEqual(did.missing, ['Nope']);
+  assert.equal(did.changed, true);
+  assert.equal(S.routines[0].name, 'Full Body A');
+  assert.equal(S.routines[1].name, 'Fay · Full Body B');
+  assert.equal(S.programmes.p1.name, 'Gym 8 weeks');
+  assert.equal(JSON.stringify(S.workouts), before);                                 // logged workouts untouched
+  // swapping names around: a rename onto a name that is itself renamed away is fine
+  const T = { routines: [{ id: 'a', name: 'A', ex: [] }, { id: 'b', name: 'B', ex: [] }] };
+  assert.deepEqual(applyEdit(T, { rename: { A: 'B', B: 'C' } }).renamed, [['A', 'B'], ['B', 'C']]);
+  assert.deepEqual(T.routines.map(r => r.name), ['B', 'C']);
+  assert.equal(applyEdit({ routines: [] }, { rename: { A: 'B' } }).changed, false);
+});
+
+test('edit: plan merge and week replace when a week already exists', () => {
+  const S = { unit: 'kg', routines: [{ id: 'm', name: 'Mine', ex: [] }], week: { 1: ['m'], 5: ['m'] } };
+  const did = applyEdit(S, { plan: readPlan(PLAN), weekReplace: true }, { id: ids });
+  assert.equal(did.plan.status, 'added');
+  assert.equal(did.week, 'replaced');
+  assert.equal(S.week[1], undefined);
+  assert.equal(S.routines.length, 3);
+  // without weekReplace the week is left alone
+  const K = { unit: 'kg', routines: [], week: { 1: ['m'] } };
+  const k = applyEdit(K, { plan: readPlan(PLAN) }, { id: ids });
+  assert.equal(k.week, 'off');
+  assert.deepEqual(K.week, { 1: ['m'] });
+});
+
+test('edit: plan already there after a rename still replaces the week, by routine name', () => {
+  const S = { unit: 'kg', routines: [
+    { id: 'x1', name: 'Old warm', ex: [] }, { id: 'x2', name: 'Old full', ex: [] }, { id: 'keep', name: 'Other', ex: [] },
+  ], week: { 3: ['keep'], 4: ['x1'] } };
+  const did = applyEdit(S, { rename: { 'Old warm': 'T · Warm-up', 'Old full': 't · full body' }, plan: readPlan(PLAN), weekReplace: true });
+  assert.equal(did.plan.status, 'already');
+  assert.equal(did.week, 'replaced');
+  assert.equal(S.routines.length, 3);                     // nothing added twice
+  assert.deepEqual(S.week, { 0: ['x1', 'x2'], 2: ['x2'] });
+  assert.equal(did.changed, true);
+  // a second run of the same edit finds nothing to rename but would re-write the same week: harmless, and the sidecar never runs it twice
+  const again = applyEdit(S, { rename: { 'Old warm': 'T · Warm-up' }, plan: readPlan(PLAN), weekReplace: true });
+  assert.deepEqual(again.missing, ['Old warm']);
+  assert.deepEqual(S.week, { 0: ['x1', 'x2'], 2: ['x2'] });
+});
+
+test('edit: a profile in lb aborts, and a dry look is the caller\'s job (applyEdit works on a copy)', () => {
+  const S = { unit: 'lb', routines: [{ id: 'a', name: 'A', ex: [] }] };
+  const copy = JSON.parse(JSON.stringify(S));
+  const did = applyEdit(copy, { rename: { A: 'B' }, plan: readPlan(PLAN) });
+  assert.equal(did.unit, true);
+  assert.equal(did.changed, false);
+  assert.deepEqual(S, { unit: 'lb', routines: [{ id: 'a', name: 'A', ex: [] }] }); // the original, as house.edit's dryRun leaves it
+});
+
+test('edit: the manifest field is read strictly', () => {
+  const ok = readEdit({ id: 'week1-2026-11-23', rename: { 'A b': 'C' }, plan: 'fay-week1.json', week: 'replace' });
+  assert.deepEqual(ok, { id: 'week1-2026-11-23', rename: { 'A b': 'C' }, plan: 'fay-week1.json', weekReplace: true });
+  for (const bad of [null, [], { id: 'A' }, { id: 'x' }, { id: 'ok-id' }, { id: 'ok-id', rename: [] }, { id: 'ok-id', rename: { a: '' } },
+    { id: 'ok-id', rename: { a: 'b\n' } }, { id: 'ok-id', rename: { a: 'x'.repeat(81) } }, { id: 'ok-id', plan: '../x.json' },
+    { id: 'ok-id', rename: { a: 'b' }, week: 'replace' }, { id: 'ok-id', rename: { a: 'b' }, week: 'set' },
+    { id: 'ok-id', rename: Object.fromEntries(Array.from({ length: 61 }, (_, i) => [`n${i}`, 'x'])) }]) {
+    assert.ok(readEdit(bad).error, JSON.stringify(bad).slice(0, 60));
+  }
+  const m = readManifest(JSON.stringify({ people: [
+    { tag: 'fay', edit: { id: 'e-1', rename: { a: 'b' } } },
+    { tag: 'bad', edit: { id: 'X' } },
+  ] }));
+  assert.equal(m.people[0].edit.id, 'e-1');
+  assert.equal(m.people[1].edit, null);                    // person kept, edit ignored
+  assert.deepEqual(m.problems, ['bad: edit id must be 2-40 chars of a-z 0-9 -']);
+});
+
+test('edit: a rename never lands on a name that stays (review fix 23 Nov)', () => {
+  const names = S => S.routines.map(r => r.name);
+  for (const rename of [{ B: 'X', A: 'B' }, { A: 'B', B: 'X' }]) {        // B -> X is kept (X stays), so A -> B must be kept too
+    const S = { routines: [{ id: 'a', name: 'A', ex: [] }, { id: 'b', name: 'B', ex: [] }, { id: 'c', name: 'X', ex: [] }] };
+    const did = applyEdit(S, { rename });
+    assert.deepEqual(names(S), ['A', 'B', 'X']);
+    assert.deepEqual(did.kept.sort(), ['A', 'B']);
+    assert.equal(did.changed, false);
+  }
+  const N = { routines: [{ id: 'a', name: 'A', ex: [] }, { id: 'b', name: 'B', ex: [] }] };
+  applyEdit(N, { rename: { B: 'b', A: 'B' } });                            // B -> b is a no-op, so B stays taken
+  assert.deepEqual(names(N), ['A', 'B']);
+  const D = { routines: [{ id: 'a', name: 'A', ex: [] }] };
+  const d = applyEdit(D, { rename: { A: 'X', a: 'Y' } });                  // two keys for one name: the first wins
+  assert.deepEqual(names(D), ['X']);
+  assert.deepEqual(d.kept, ['a']);
+  assert.ok(readEdit({ id: 'ok-id', rename: { a: '   ' } }).error);       // a blank new name is refused
+});
+
+test('edit: week replace on a plan already there keeps the week\'s other keys', () => {
+  const S = { unit: 'kg', routines: [{ id: 'x1', name: 'T · Warm-up', ex: [] }, { id: 'x2', name: 'T · Full Body', ex: [] }], week: { 3: ['x1'], note: 'kept' } };
+  applyEdit(S, { plan: readPlan(PLAN), weekReplace: true });
+  assert.deepEqual(S.week, { 0: ['x1', 'x2'], 2: ['x2'], note: 'kept' });
 });

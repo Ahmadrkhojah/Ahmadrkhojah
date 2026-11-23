@@ -20,6 +20,10 @@
 //   4. Weekly numbers. {type:"stats"} with this week's and last week's workouts and sets
 //      (Sunday to Saturday, local time) and the app's own week streak, sent when they change and at
 //      least every STATS_EVERY_MS. Home Assistant sends the Sunday recap from them.
+//   5. One-off renames (rename_prefix) and one-off edits (edit): see the manifest notes below.
+//      `"edit": {"id", "rename": {old: new}, "plan": "file.json", "week": "replace"}` is applied once
+//      per edit id (house.edit: renames, then the optional plan, then the week replaced from that plan,
+//      all in one backed-up write), after the person's own plan has been added. A new id applies again.
 // State that must survive a restart: /data/opengym/house/state.json (applied plans, invite
 // generations). Status for people and tools: /config/plans/status.json (no codes, no training data).
 import fs from 'node:fs';
@@ -36,6 +40,7 @@ const STATE_DIR = '/data/opengym/house';
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
 const TAG_RX = /^[a-z][a-z0-9-]{1,20}$/;
 const FILE_RX = /^[a-z0-9][a-z0-9-]{0,60}\.json$/;
+const EDIT_ID_RX = /^[a-z0-9][a-z0-9-]{1,39}$/;
 const HOOK_RX = /^[A-Za-z0-9_-]{16,128}$/;
 const log = (...a) => console.log('[house]', new Date().toISOString(), ...a);
 
@@ -44,6 +49,31 @@ export const UTC_OFFSET_H = 3;
 export const localToday = (now = Date.now()) => new Date(now + UTC_OFFSET_H * 3600000).toISOString().slice(0, 10);
 const nameKey = s => String(s || '').normalize('NFKC').trim().toLowerCase();
 const label = s => String(s || '').replace(/[^\p{L}\p{N} .'-]/gu, '').trim().slice(0, 30);
+
+/** A person's `edit` field, checked strictly: { id, rename, plan, weekReplace } or { error }. */
+export function readEdit(e) {
+  if (!e || typeof e !== 'object' || Array.isArray(e)) return { error: 'edit is not an object' };
+  if (typeof e.id !== 'string' || !EDIT_ID_RX.test(e.id)) return { error: 'edit id must be 2-40 chars of a-z 0-9 -' };
+  let rename = {};
+  if (e.rename != null) {
+    if (typeof e.rename !== 'object' || Array.isArray(e.rename)) return { error: 'edit rename is not a map' };
+    const ents = Object.entries(e.rename);
+    if (ents.length > 60) return { error: 'edit rename has more than 60 entries' };
+    for (const [o, n] of ents) {
+      if (typeof n !== 'string' || !o.trim() || o.length > 80 || !n.trim() || n.length > 80 || /[\u0000-\u001f]/.test(o + n)) return { error: 'edit rename names must be 1-80 characters, no control characters' };
+    }
+    rename = Object.fromEntries(ents);
+  }
+  let plan = null;
+  if (e.plan != null) {
+    if (typeof e.plan !== 'string' || !FILE_RX.test(e.plan)) return { error: 'edit has a bad plan file name' };
+    plan = e.plan;
+  }
+  if (e.week != null && e.week !== 'replace') return { error: 'edit week can only be "replace"' };
+  if (e.week === 'replace' && !plan) return { error: 'edit week needs a plan' };
+  if (!plan && !Object.keys(rename).length) return { error: 'edit has nothing to do' };
+  return { id: e.id, rename, plan, weekReplace: e.week === 'replace' };
+}
 
 /** The manifest, checked; bad entries are left out with a reason. Never throws. */
 export function readManifest(text) {
@@ -57,11 +87,17 @@ export function readManifest(text) {
     const plan = p.plan == null ? null : String(p.plan);
     if (plan && !FILE_RX.test(plan)) { problems.push(`${p.tag}: bad plan file name`); continue; }
     const match = p.match && typeof p.match === 'object' ? p.match : {};
+    let edit = null;
+    if (p.edit != null) {
+      const r = readEdit(p.edit);
+      if (r.error) problems.push(`${p.tag}: ${r.error}`); else edit = r;
+    }
     people.push({
       tag: p.tag, label: label(p.label) || p.tag, plan, schedule: p.schedule !== false,
       owner: match.owner === true,
       names: (Array.isArray(match.names) ? match.names : []).map(nameKey).filter(Boolean).slice(0, 5),
       invite: Number.isInteger(p.invite) && p.invite > 0 ? p.invite : 0,
+      edit,
       renamePrefix: typeof p.rename_prefix === 'string' && p.rename_prefix.length >= 2 && p.rename_prefix.length <= 30 ? p.rename_prefix : null,
     });
   }
@@ -238,6 +274,30 @@ async function main() {
             log(`rename for ${person.label}: ${r.status}, ${r.renamed.length} names`);
           }
         } catch (e) { row.rename = { status: `not yet: ${e.message}` }; }
+      }
+
+      // One-off edits: renames, an extra plan and a week replace, once per edit id (after the person's own plan).
+      st.edited = st.edited || {};
+      for (const person of man.people) {
+        const ed = person.edit;
+        if (!ed) continue;
+        const row = status.people[person.tag];
+        const done = st.edited[person.tag]?.[ed.id];
+        if (done) { row.edit = { id: ed.id, status: done.status, at: done.at, renamed: done.renamed, kept: done.kept, missing: done.missing, plan: done.plan, week: done.week, backup: done.backup || null }; continue; }
+        const u = findUser(person, users);
+        if (!u || !u.synced) { row.edit = { id: ed.id, status: 'waiting for the profile' }; continue; }
+        if (person.plan && !st.applied[person.tag]) { row.edit = { id: ed.id, status: 'waiting for the plan' }; continue; }
+        try {
+          const r = await ask({ cmd: 'house.edit', uid: u.id, id: ed.id, rename: ed.rename, file: ed.plan, weekReplace: ed.weekReplace, dryRun: man.dryRun });
+          const res = { status: r.status, renamed: r.renamed, kept: r.kept, missing: r.missing, plan: r.plan ? r.plan.status : null, week: r.week, backup: r.backup || null };
+          row.edit = { id: ed.id, ...res };
+          if (!man.dryRun) {
+            (st.edited[person.tag] = st.edited[person.tag] || {})[ed.id] = { at: new Date().toISOString(), ...res };
+            writeJson(STATE_FILE, st);
+            log(`edit ${ed.id} for ${person.label}: ${r.status}, ${r.renamed.length} names, week ${r.week}`);
+            tick = USERS_EVERY - 1;
+          }
+        } catch (e) { row.edit = { id: ed.id, status: `not yet: ${e.message}` }; }
       }
 
       // Live workout + weekly numbers of the followed person

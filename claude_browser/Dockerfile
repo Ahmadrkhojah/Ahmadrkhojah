@@ -15,4 +15,4 @@ COPY rootfs/cb/ /cb/
 RUN chmod 0755 /cb && chmod 0644 /cb/*.mjs /cb/*.js /cb/*.json && chmod 0755 /cb/run.sh
 
 ENTRYPOINT ["/usr/bin/tini", "-s", "-g", "--", "/cb/run.sh"]
-LABEL io.hass.type="addon" io.hass.version="0.1.5"
+LABEL io.hass.type="addon" io.hass.version="0.1.6"

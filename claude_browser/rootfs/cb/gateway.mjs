@@ -18,7 +18,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { hostnameProblem } from './policy.mjs';
 
-const VERSION = '0.1.5';
+const VERSION = '0.1.6';
 const LISTEN_PORT = Number(process.env.CB_GATEWAY_PORT || 8931);
 const UPSTREAM = process.env.CB_UPSTREAM || 'http://127.0.0.1:8930/mcp';
 const IDLE_MS = Number(process.env.CB_IDLE_MINUTES || 5) * 60_000;
@@ -49,7 +49,7 @@ const SERVER_INSTRUCTIONS = [
   'Home and private addresses are blocked on purpose. One shared browser, one call at a time; the page stays open between calls until 5 idle minutes pass.',
 ].join(' ');
 
-// Tools that may be offered (names from Playwright MCP 0.0.85). Everything else is hidden
+// Tools that may be offered (names from Playwright MCP 0.0.85 and 0.0.86 (unchanged)). Everything else is hidden
 // and refused: file upload, run_code_unsafe, evaluate, storage/cookie access, routes,
 // network tools, PDF/screenshot/trace/video files, resize, etc.
 const ALLOWED_TOOLS = new Set([
